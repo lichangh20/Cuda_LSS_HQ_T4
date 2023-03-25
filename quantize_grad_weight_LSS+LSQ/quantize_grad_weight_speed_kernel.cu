@@ -92,15 +92,15 @@ using LayoutOutput = cutlass::layout::RowMajor;
 using MMAOp = cutlass::arch::OpClassTensorOp;
 
 // This code section describes CUDA SM architecture number
-using SmArch = cutlass::arch::Sm80;
+using SmArch = cutlass::arch::Sm75;
 
 // This code section describes the tile size a thread block will compute
 using ShapeMMAThreadBlock =
-    cutlass::gemm::GemmShape<128, 128, 128>;  // <- threadblock tile M = 128, N = 256, K = 64
+    cutlass::gemm::GemmShape<256, 128, 128>;  // <- threadblock tile M = 128, N = 256, K = 64
 // This code section describes tile size a warp will compute
 using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 128>;  // <- warp tile M = 64, N = 64, K = 64 
 // This code section describes the size of MMA op
-using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 64>;  // <- MMA Op tile M = 8, N = 8, K = 16
+using ShapeMMAOp = cutlass::gemm::GemmShape<8, 8, 32>;  // <- MMA Op tile M = 8, N = 8, K = 16
 
 // This code section describes how threadblocks are scheduled on GPU
 using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<8>;  // <- ??
@@ -116,7 +116,7 @@ using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
     ElementComputeEpilogue>;  // <- data type for alpha/beta in linear combination function
 
 // Number of pipelines you want to use
-constexpr int NumStages = 3;
+constexpr int NumStages = 2;
 
 using Gemm = cutlass::gemm::device::Gemm<ElementInputA,
                                          LayoutInputA,
@@ -163,6 +163,7 @@ using Gemm = cutlass::gemm::device::Gemm<ElementInputA,
   // Return success, if no errors were encountered.
   return cudaSuccess;
 }
+
 
 #define N_THREADS 256
 
@@ -440,44 +441,44 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
         scale_norm,len_norm);
     }));
     auto sample_index = norm_weight_loop;
-    int posNum = (norm_weight_loop > 0).sum().item<int>();
+    // int posNum = (norm_weight_loop > 0).sum().item<int>();
     // if (posNum < len_norm / 2){
-    if (true) {
-        cnt = posNum;
-        norm_weight_loop.index_put_({norm_weight_loop > 0}, 1);
-        flag = 2;
-    }else{
-        bool whileloop = (norm_weight_loop.max() > 1).item<bool>();
-        while (1){
-            if (!(whileloop && cnt < len_norm / 2)) {
-                flag = 1;
-                break;
-            }
-            auto small_index = (norm_weight_loop < 1);
-            auto small_value = norm_weight_loop.index({small_index});
-            long long int small_len = small_value.numel();
-            cnt = len_norm - small_len;
-            norm_weight_loop = torch::clamp(norm_weight_loop, 0, 1);
-            bool breakloop = (small_value.max() == 0).item<bool>();
-            if (breakloop) {
-                flag = 2;
-                break;
-            }
-            // small_value = small_value * (len_norm / 2 - cnt) / small_value.sum();
-            float scale_small = (len_norm / 2 - cnt) / small_value.sum().item<float>();
-            dim3 grid_small(small_len/block.x+1);
-            AT_DISPATCH_FLOATING_TYPES_AND_HALF(small_value.scalar_type(), "multiple_cuda", ([&] {
-            multiple_kernel<scalar_t><<<grid_small, block>>>(
-                small_value.data_ptr<scalar_t>(),
-                small_value.data_ptr<scalar_t>(),
-                scale_small,small_len);
-            }));
-            // norm_weight_loop[small_index] = small_value;
-            norm_weight_loop.index_put_({small_index}, small_value);
-            whileloop = (norm_weight_loop.max() > 1).item<bool>();
-        } 
-        sample_index = torch::bernoulli(norm_weight_loop);
-    }
+    // if (true) {
+    //     cnt = posNum;
+    //     norm_weight_loop.index_put_({norm_weight_loop > 0}, 1);
+    //     flag = 2;
+    // }else{
+    bool whileloop = (norm_weight_loop.max() > 1).item<bool>();
+    while (1){
+        if (!(whileloop && cnt < len_norm / 2)) {
+            flag = 1;
+            break;
+        }
+        auto small_index = (norm_weight_loop < 1);
+        auto small_value = norm_weight_loop.index({small_index});
+        long long int small_len = small_value.numel();
+        cnt = len_norm - small_len;
+        norm_weight_loop = torch::clamp(norm_weight_loop, 0, 1);
+        bool breakloop = (small_value.max() == 0).item<bool>();
+        if (breakloop) {
+            flag = 2;
+            break;
+        }
+        // small_value = small_value * (len_norm / 2 - cnt) / small_value.sum();
+        float scale_small = (len_norm / 2 - cnt) / small_value.sum().item<float>();
+        dim3 grid_small(small_len/block.x+1);
+        AT_DISPATCH_FLOATING_TYPES_AND_HALF(small_value.scalar_type(), "multiple_cuda", ([&] {
+        multiple_kernel<scalar_t><<<grid_small, block>>>(
+            small_value.data_ptr<scalar_t>(),
+            small_value.data_ptr<scalar_t>(),
+            scale_small,small_len);
+        }));
+        // norm_weight_loop[small_index] = small_value;
+        norm_weight_loop.index_put_({small_index}, small_value);
+        whileloop = (norm_weight_loop.max() > 1).item<bool>();
+    } 
+    sample_index = torch::bernoulli(norm_weight_loop);
+    // }
     // auto sample_index = torch::bernoulli(norm_weight_loop);
     auto small_indices = torch::nonzero(sample_index.index({Slice({None, len_norm/2})}) == 1).squeeze(1);
     auto large_indices = torch::nonzero(sample_index.index({Slice(len_norm/2)}) == 1).squeeze(1);
