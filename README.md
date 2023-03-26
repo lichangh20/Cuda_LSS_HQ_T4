@@ -16,10 +16,17 @@ git clone git@github.com:NVIDIA/cutlass.git
 git checkout feature/2.10/updates_before_tagging
 ```
 
-### LSS
+### LssWeight
 
 ```
 cd quantize_grad_weight_LSS
+python setup.py install
+```
+
+### LssInput
+
+```
+cd quantize_grad_input_LSS+LSQ
 python setup.py install
 ```
 
